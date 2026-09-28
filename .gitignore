@@ -24,3 +24,8 @@
 # OS generated
 .DS_Store
 Thumbs.db
+
+# Spring server build and local dependency cache
+/server/target/
+/server/.mvn-cache/
+/server/unity-compile.log
