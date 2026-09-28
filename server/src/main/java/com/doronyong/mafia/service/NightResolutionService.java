@@ -2,17 +2,18 @@ package com.doronyong.mafia.service;
 
 import com.doronyong.mafia.domain.ActionCode;
 import com.doronyong.mafia.domain.Faction;
+import com.doronyong.mafia.domain.PirateAttackSelectionEntity;
 import com.doronyong.mafia.domain.RoomActionEntity;
 import com.doronyong.mafia.domain.RoomEntity;
 import com.doronyong.mafia.domain.RoomPhase;
 import com.doronyong.mafia.domain.RoomPlayerEntity;
 import com.doronyong.mafia.domain.RoomReportEntity;
 import com.doronyong.mafia.repository.RoomActionRepository;
+import com.doronyong.mafia.repository.PirateAttackSelectionRepository;
 import com.doronyong.mafia.repository.RoomPlayerRepository;
 import com.doronyong.mafia.repository.RoomReportRepository;
 import com.doronyong.mafia.repository.RoomRepository;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,15 +34,19 @@ public class NightResolutionService {
     private final RoomRepository rooms;
     private final RoomPlayerRepository players;
     private final RoomActionRepository actions;
+    private final PirateAttackSelectionRepository pirateSelections;
     private final RoomReportRepository reports;
     private final RoomOutcomeService outcome;
 
     public NightResolutionService(RoomRepository rooms, RoomPlayerRepository players,
-                                  RoomActionRepository actions, RoomReportRepository reports,
+                                  RoomActionRepository actions,
+                                  PirateAttackSelectionRepository pirateSelections,
+                                  RoomReportRepository reports,
                                   RoomOutcomeService outcome) {
         this.rooms = rooms;
         this.players = players;
         this.actions = actions;
+        this.pirateSelections = pirateSelections;
         this.reports = reports;
         this.outcome = outcome;
     }
@@ -72,8 +77,8 @@ public class NightResolutionService {
             .filter(action -> !blocked.contains(action.getActorPlayerId())
                 || action.getActionCode().equals(ActionCode.BLOCK.name()))
             .toList();
-        // 감시자가 보는 '방문'과 실제 효과는 다르다. 해적 투표는 방문이 아니고,
-        // 과반수로 확정된 공격에 한해 아래에서 대표 해적 한 명의 방문을 추가한다.
+        // 감시자가 보는 '방문'과 실제 효과는 다르다. 옛 버전의 해적 투표는 방문이 아니며,
+        // 이번 밤 최종 공격에 한해 아래에서 실행 해적 한 명의 방문을 추가한다.
         // 원숭이는 효과가 없어도 차단되지 않았다면 방문 흔적은 남는다.
         List<Visit> visits = new ArrayList<>();
         for (RoomActionEntity action : unblocked) {
@@ -91,21 +96,19 @@ public class NightResolutionService {
             .filter(action -> action.getActionCode().equals(ActionCode.PROTECT.name()))
             .map(RoomActionEntity::getTargetPlayerId).collect(Collectors.toSet());
 
-        // 제출한 해적 중 과반수가 아니라 '살아 있는 해적 전체'의 과반수가 필요하다.
-        long livingPirates = roster.stream().filter(RoomPlayerEntity::isAlive)
-            .filter(player -> outcome.factionOf(player) == Faction.PIRATE).count();
-        Map<Long, List<RoomActionEntity>> votes = effective.stream()
-            .filter(action -> action.getActionCode().equals(ActionCode.TEAM_ATTACK_VOTE.name()))
-            .collect(Collectors.groupingBy(RoomActionEntity::getTargetPlayerId));
-        List<RoomActionEntity> winningVotes = votes.values().stream()
-            .filter(group -> group.size() > livingPirates / 2)
-            .findFirst().orElse(List.of());
-        if (!winningVotes.isEmpty()) {
-            RoomActionEntity executor = winningVotes.stream()
-                // 공격 방문자는 항상 가장 작은 playerId로 정해 제출 순서에 좌우되지 않는다.
-                .min(Comparator.comparing(RoomActionEntity::getActorPlayerId)).orElseThrow();
-            Long victimId = executor.getTargetPlayerId();
-            visits.add(new Visit(executor.getActorPlayerId(), victimId, "TEAM_ATTACK"));
+        // 공유 대상은 이번 밤 마지막 선택이다. 표 수는 세지 않는다. 아무도 선택하지 않았다면 공격도 없다.
+        PirateAttackSelectionEntity selected = pirateSelections
+            .findTopByRoomIdAndNightNumberOrderByIdDesc(roomsId, room.getNightNumber())
+            .orElse(null);
+        // 살아 있고 차단되지 않은 해적 한 명이 공격을 실행한다. 전원이 차단되면 공격할 수 없다.
+        RoomPlayerEntity executor = roster.stream()
+            .filter(RoomPlayerEntity::isAlive)
+            .filter(player -> "PIRATE_RAIDER".equals(player.getRoleCode()))
+            .filter(player -> !blocked.contains(player.getPlayerId()))
+            .findFirst().orElse(null); // roster는 playerId 오름차순이다.
+        if (selected != null && executor != null) {
+            Long victimId = selected.getTargetPlayerId();
+            visits.add(new Visit(executor.getPlayerId(), victimId, "PIRATE_ATTACK"));
             RoomPlayerEntity victim = byId.get(victimId);
             if (victim != null && victim.isAlive() && !protectedPlayers.contains(victimId)) {
                 victim.kill();
@@ -134,17 +137,17 @@ public class NightResolutionService {
                         targetId + "번 방문자: " + (visitorIds.isEmpty() ? "없음" : visitorIds));
                 }
                 case WATCH_ACTION -> {
-                    // 앵무새는 대상의 제출 행동을 본다. 해적의 TEAM_ATTACK_VOTE도 행동으로 표시한다.
-                    String watched = unblocked.stream()
-                        .filter(observed -> observed.getActorPlayerId().equals(targetId))
-                        .map(observed -> observed.getActionCode() + " → " + observed.getTargetPlayerId())
+                    // 앵무새는 방문한 행동과 실제 해적 공격을 본다. 대상 변경 이력은 방문이 아니다.
+                    String watched = visits.stream()
+                        .filter(visit -> visit.actorId().equals(targetId))
+                        .map(visit -> visit.actionCode() + " → " + visit.targetId())
                         .collect(Collectors.joining(", "));
                     report(roomsId, actor.getPlayerId(), room.getNightNumber(), "WATCHED_ACTION",
                         targetId + "번의 행동: " + (watched.isEmpty() ? "없음" : watched));
                 }
                 case READ_CORPSE_ROLE -> report(roomsId, actor.getPlayerId(), room.getNightNumber(),
                     "CORPSE_ROLE", targetId + "번의 직업: " + byId.get(targetId).getRoleCode());
-                default -> { /* 차단·보호·투표는 위에서 처리한다. */ }
+                default -> { /* 차단·보호와 이전 버전의 투표 기록은 위에서 처리했거나 무시한다. */ }
             }
         }
 

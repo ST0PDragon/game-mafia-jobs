@@ -1,6 +1,7 @@
 package com.doronyong.mafia.dto;
 
 import com.doronyong.mafia.domain.Faction;
+import com.doronyong.mafia.domain.PirateAttackSelectionEntity;
 import com.doronyong.mafia.domain.RoleEntity;
 import com.doronyong.mafia.domain.RoomActionEntity;
 import com.doronyong.mafia.domain.RoomPhase;
@@ -40,6 +41,12 @@ public final class RoleApiDtos {
 
     public record ReportsResponse(List<ReportView> reports) {}
 
+    /** 이번 밤의 공유 대상. 미선택 시 hasTarget=false이고 두 playerId는 0이므로 무시한다. */
+    public record PirateAttackTargetResponse(
+        Long gamesId, int nightNumber, boolean hasTarget,
+        long targetPlayerId, long selectedByPlayerId
+    ) {}
+
     /**
      * requestId는 재시도 시에도 같은 값을 사용한다.
      * playerId 0은 현재 Unity 로컬 프로토타입의 첫 플레이어 번호라 허용한다.
@@ -58,6 +65,13 @@ public final class RoleApiDtos {
             return new ActionResponse(
                 action.getId(), action.getRoomId(), action.getStatus(),
                 action.getActionCode(), action.getTargetPlayerId()
+            );
+        }
+
+        public static ActionResponse from(PirateAttackSelectionEntity selection) {
+            return new ActionResponse(
+                selection.getId(), selection.getRoomId(), "SELECTED",
+                "SELECT_ATTACK_TARGET", selection.getTargetPlayerId()
             );
         }
     }

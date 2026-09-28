@@ -3,6 +3,7 @@ package com.doronyong.mafia.controller;
 import com.doronyong.mafia.domain.Faction;
 import com.doronyong.mafia.dto.RoleApiDtos.ActionResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.MyRoleResponse;
+import com.doronyong.mafia.dto.RoleApiDtos.PirateAttackTargetResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.RoleListResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.ReportsResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.SubmitActionRequest;
@@ -50,6 +51,13 @@ public class RoleController {
     @GetMapping("/games/{gamesId}/me/reports")
     public ReportsResponse myReports(@PathVariable Long gamesId, @AuthenticationPrincipal Jwt jwt) {
         return roleService.getMyReports(gamesId, userId(jwt));
+    }
+
+    @GetMapping("/games/{gamesId}/pirate-attack")
+    public PirateAttackTargetResponse pirateAttack(@PathVariable Long gamesId,
+                                                    @AuthenticationPrincipal Jwt jwt) {
+        // 해적에게만 이번 밤의 공유 공격 대상을 보여 준다.
+        return roleService.getPirateAttackTarget(gamesId, userId(jwt));
     }
 
     @PostMapping("/games/{gamesId}/actions")

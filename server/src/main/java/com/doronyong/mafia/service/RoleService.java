@@ -2,6 +2,7 @@ package com.doronyong.mafia.service;
 
 import com.doronyong.mafia.domain.ActionCode;
 import com.doronyong.mafia.domain.Faction;
+import com.doronyong.mafia.domain.PirateAttackSelectionEntity;
 import com.doronyong.mafia.domain.RoleEntity;
 import com.doronyong.mafia.domain.RoomActionEntity;
 import com.doronyong.mafia.domain.RoomEntity;
@@ -11,12 +12,14 @@ import com.doronyong.mafia.domain.RoomReportEntity;
 import com.doronyong.mafia.dto.RoleApiDtos.AbilityView;
 import com.doronyong.mafia.dto.RoleApiDtos.ActionResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.MyRoleResponse;
+import com.doronyong.mafia.dto.RoleApiDtos.PirateAttackTargetResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.ReportView;
 import com.doronyong.mafia.dto.RoleApiDtos.ReportsResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.RoleListResponse;
 import com.doronyong.mafia.dto.RoleApiDtos.RoleView;
 import com.doronyong.mafia.dto.RoleApiDtos.SubmitActionRequest;
 import com.doronyong.mafia.repository.RoleRepository;
+import com.doronyong.mafia.repository.PirateAttackSelectionRepository;
 import com.doronyong.mafia.repository.RoomActionRepository;
 import com.doronyong.mafia.repository.RoomPlayerRepository;
 import com.doronyong.mafia.repository.RoomReportRepository;
@@ -32,6 +35,7 @@ import org.springframework.web.server.ResponseStatusException;
 /**
  * 공개 직업 목록, 본인 정보, 행동 접수를 담당한다.
  * 이 서비스는 밤 행동을 기록만 하고 실제 효과는 NightResolutionService가 밤 종료 시 적용한다.
+ * 해적 공격 대상은 여러 번 바꿀 수 있어 room_actions 대신 pirate_attack_selections에 기록한다.
  * 예외는 포수의 DAY_SHOOT로, 낮에 즉시 적용한다.
  */
 @Service
@@ -41,16 +45,19 @@ public class RoleService {
     private final RoomPlayerRepository players;
     private final RoomActionRepository actions;
     private final RoomReportRepository reports;
+    private final PirateAttackSelectionRepository pirateSelections;
     private final RoomOutcomeService outcome;
 
     public RoleService(RoleRepository roles, RoomRepository rooms, RoomPlayerRepository players,
                        RoomActionRepository actions, RoomReportRepository reports,
+                       PirateAttackSelectionRepository pirateSelections,
                        RoomOutcomeService outcome) {
         this.roles = roles;
         this.rooms = rooms;
         this.players = players;
         this.actions = actions;
         this.reports = reports;
+        this.pirateSelections = pirateSelections;
         this.outcome = outcome;
     }
 
@@ -79,10 +86,7 @@ public class RoleService {
         }
         List<Long> allies = List.of();
         if (outcome.factionOf(actor) == Faction.PIRATE) {
-            // 앵무새는 고유 능력과 팀 투표를 모두 갖는다. 일반 해적은 팀 투표만 갖는다.
-            if (!"TEAM_ATTACK_VOTE".equals(shownRole.getActionCode())) {
-                available.add(ability(roomsId, actor, ActionCode.TEAM_ATTACK_VOTE));
-            }
+            // 해적끼리는 서로 알지만 공유 공격 대상 변경은 PIRATE_RAIDER만 할 수 있다.
             allies = players.findByRoomIdOrderByPlayerIdAsc(roomsId).stream()
                 .filter(player -> !Objects.equals(player.getPlayerId(), actor.getPlayerId()))
                 .filter(player -> outcome.factionOf(player) == Faction.PIRATE)
@@ -98,6 +102,25 @@ public class RoleService {
         // recipient_player_id로 조회해 다른 플레이어의 조사 결과가 섞이지 않게 한다.
         return new ReportsResponse(reports.findByRoomIdAndRecipientPlayerIdOrderByIdAsc(
             roomsId, actor.getPlayerId()).stream().map(ReportView::from).toList());
+    }
+
+    @Transactional(readOnly = true)
+    public PirateAttackTargetResponse getPirateAttackTarget(Long roomsId, Long userId) {
+        RoomEntity room = room(roomsId);
+        RoomPlayerEntity actor = member(roomsId, userId);
+        if (room.getPhase() != RoomPhase.NIGHT) {
+            throw error(HttpStatus.CONFLICT, "Attack target is visible only at night");
+        }
+        if (!actor.isAlive() || actor.getRoleCode() == null
+            || outcome.factionOf(actor) != Faction.PIRATE) {
+            throw error(HttpStatus.FORBIDDEN, "Only living pirates can view the attack target");
+        }
+        PirateAttackSelectionEntity selected = pirateSelections
+            .findTopByRoomIdAndNightNumberOrderByIdDesc(roomsId, room.getNightNumber())
+            .orElse(null);
+        return new PirateAttackTargetResponse(roomsId, room.getNightNumber(), selected != null,
+            selected == null ? 0L : selected.getTargetPlayerId(),
+            selected == null ? 0L : selected.getActorPlayerId());
     }
 
     @Transactional
@@ -117,6 +140,16 @@ public class RoleService {
             }
             return ActionResponse.from(previous);
         }
+        PirateAttackSelectionEntity priorSelection = pirateSelections
+            .findByRoomIdAndActorPlayerIdAndRequestId(
+                roomsId, actor.getPlayerId(), request.requestId()).orElse(null);
+        if (priorSelection != null) {
+            if (!ActionCode.SELECT_ATTACK_TARGET.name().equals(request.actionCode())
+                || !Objects.equals(priorSelection.getTargetPlayerId(), request.targetPlayerId())) {
+                throw error(HttpStatus.CONFLICT, "requestId was already used with different data");
+            }
+            return ActionResponse.from(priorSelection);
+        }
 
         ActionCode code = parseAction(request.actionCode());
         // 순서: 현재 단계/생존 → 직업 권한 → 라운드 중복/게임 횟수 → 대상 규칙 → 저장.
@@ -128,13 +161,12 @@ public class RoleService {
             throw error(HttpStatus.FORBIDDEN, "Player cannot act");
         }
         RoleEntity shownRole = role(actor.getShownRoleCode());
-        // 해적 투표는 진영 공통 행동이다. 원숭이는 위장 직업 행동을 제출할 수 있으나 밤 판정에서 무효화된다.
-        boolean pirateVote = code == ActionCode.TEAM_ATTACK_VOTE
-            && outcome.factionOf(actor) == Faction.PIRATE;
-        if (!pirateVote && !code.name().equals(shownRole.getActionCode())) {
+        // 공유 공격 대상 변경은 해적 직업의 행동이다. 원숭이 위장 행동은 밤 판정에서 무효화된다.
+        boolean pirateAttack = code == ActionCode.SELECT_ATTACK_TARGET;
+        if (!code.name().equals(shownRole.getActionCode())) {
             throw error(HttpStatus.FORBIDDEN, "Action is not available to this role");
         }
-        if (actions.findByRoomIdAndActorPlayerIdAndPhaseAndRoundNumberAndActionCode(
+        if (!pirateAttack && actions.findByRoomIdAndActorPlayerIdAndPhaseAndRoundNumberAndActionCode(
             roomsId, actor.getPlayerId(), room.getPhase(), room.getNightNumber(), code.name()
         ).isPresent()) {
             throw error(HttpStatus.CONFLICT, "Action already submitted this phase");
@@ -152,7 +184,7 @@ public class RoleService {
         if (!code.allowsSelfTarget() && Objects.equals(actor.getPlayerId(), target.getPlayerId())) {
             throw error(HttpStatus.BAD_REQUEST, "Cannot target yourself");
         }
-        if (pirateVote && outcome.factionOf(target) == Faction.PIRATE) {
+        if (pirateAttack && outcome.factionOf(target) == Faction.PIRATE) {
             throw error(HttpStatus.BAD_REQUEST, "Pirates cannot attack a teammate");
         }
         if (code == ActionCode.PROTECT
@@ -167,6 +199,14 @@ public class RoleService {
                 // 지난 밤 행동이 차단됐더라도 '자기 보호 선택' 자체가 연속이었다면 금지한다.
                 throw error(HttpStatus.CONFLICT, "Cannot protect yourself on consecutive nights");
             }
+        }
+
+        if (pirateAttack) {
+            // 같은 밤에 여러 번 제출할 수 있다. 마지막으로 저장된 선택이 팀의 공유 대상이다.
+            PirateAttackSelectionEntity selection = pirateSelections.saveAndFlush(
+                new PirateAttackSelectionEntity(roomsId, room.getNightNumber(),
+                    actor.getPlayerId(), request.requestId(), request.targetPlayerId()));
+            return ActionResponse.from(selection);
         }
 
         RoomActionEntity action = actions.saveAndFlush(new RoomActionEntity(

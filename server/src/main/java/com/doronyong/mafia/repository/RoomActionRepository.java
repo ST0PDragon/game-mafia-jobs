@@ -13,7 +13,7 @@ public interface RoomActionRepository extends JpaRepository<RoomActionEntity, Lo
         Long roomId, Long actorPlayerId, UUID requestId
     );
 
-    // 앵무새는 WATCH_ACTION과 TEAM_ATTACK_VOTE를 같은 밤에 각각 한 번씩 제출할 수 있다.
+    // 일반 능력은 같은 단계·라운드에 한 번만 제출한다. 해적의 공유 대상 변경은 별도 테이블에 저장한다.
     Optional<RoomActionEntity> findByRoomIdAndActorPlayerIdAndPhaseAndRoundNumberAndActionCode(
         Long roomId, Long actorPlayerId, RoomPhase phase, int roundNumber, String actionCode
     );

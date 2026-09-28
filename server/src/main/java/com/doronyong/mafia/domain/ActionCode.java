@@ -13,6 +13,8 @@ public enum ActionCode {
     BLOCK(RoomPhase.NIGHT, -1, true, false),
     DAY_SHOOT(RoomPhase.DAY, 1, true, false),
     READ_CORPSE_ROLE(RoomPhase.NIGHT, 2, false, false),
+    SELECT_ATTACK_TARGET(RoomPhase.NIGHT, -1, true, false),
+    // V2에서 제출된 행동을 읽을 수 있도록 남긴 이전 코드. 새 직업에는 배정하지 않는다.
     TEAM_ATTACK_VOTE(RoomPhase.NIGHT, -1, true, false),
     WATCH_ACTION(RoomPhase.NIGHT, -1, true, false);
 

@@ -26,6 +26,7 @@ class RoleApiIntegrationTest {
     @Autowired RoomRepository rooms;
     @Autowired RoomPlayerRepository players;
     @Autowired RoomActionRepository actions;
+    @Autowired PirateAttackSelectionRepository pirateSelections;
     @Autowired RoomReportRepository reports;
     @Autowired RoleService roles;
     @Autowired NightResolutionService nights;
@@ -33,6 +34,7 @@ class RoleApiIntegrationTest {
 
     @BeforeEach void setUp() {
         reports.deleteAll();
+        pirateSelections.deleteAll();
         actions.deleteAll();
         players.deleteAll();
         rooms.deleteAll();
@@ -75,11 +77,18 @@ class RoleApiIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.gamesId").value(roomsId))
             .andExpect(jsonPath("$.allies[0]").value(1))
-            .andExpect(jsonPath("$.abilities[0].actionCode").value("TEAM_ATTACK_VOTE"));
+            .andExpect(jsonPath("$.abilities[0].actionCode").value("SELECT_ATTACK_TARGET"));
         mvc.perform(get("/api/v1/games/{gamesId}/me/role", roomsId)
                 .with(jwt().jwt(token -> token.subject("101"))))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.abilities.length()").value(2));
+            .andExpect(jsonPath("$.abilities.length()").value(1));
+        mvc.perform(get("/api/v1/games/{gamesId}/pirate-attack", roomsId)
+                .with(jwt().jwt(token -> token.subject("101"))))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.hasTarget").value(false));
+        mvc.perform(get("/api/v1/games/{gamesId}/pirate-attack", roomsId)
+                .with(jwt().jwt(token -> token.subject("102"))))
+            .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/rooms/{roomsId}/me/role", roomsId)
                 .with(jwt().jwt(token -> token.subject("100"))))
             .andExpect(status().isNotFound());
@@ -124,9 +133,8 @@ class RoleApiIntegrationTest {
         submit(0, "INVESTIGATE_FACTION", 3);
         submit(1, "WATCH_VISITORS", 5);
         submit(2, "PROTECT", 5);
-        submit(3, "TEAM_ATTACK_VOTE", 5);
+        submit(3, "SELECT_ATTACK_TARGET", 5);
         submit(4, "WATCH_ACTION", 2);
-        submit(4, "TEAM_ATTACK_VOTE", 5);
         nights.resolveNight(roomsId);
         assertTrue(players.findByRoomIdAndPlayerId(roomsId, 5L).orElseThrow().isAlive());
         assertTrue(reportText(0).contains("PIRATE"));
@@ -144,24 +152,90 @@ class RoleApiIntegrationTest {
         add(4, "PIRATE_PARROT", true);
         submit(0, "BLOCK", 1);
         submit(1, "PROTECT", 2);
-        submit(3, "TEAM_ATTACK_VOTE", 2);
-        submit(4, "TEAM_ATTACK_VOTE", 2);
+        submit(3, "SELECT_ATTACK_TARGET", 2);
         nights.resolveNight(roomsId);
         assertFalse(players.findByRoomIdAndPlayerId(roomsId, 2L).orElseThrow().isAlive());
         assertTrue(reportText(0).contains("NIGHT_DEATH"));
         assertEquals(Faction.PIRATE, rooms.findById(roomsId).orElseThrow().getWinnerFaction());
     }
 
-    @Test void oneOfTwoPirateVotesCannotKill() {
+    @Test void onePirateSelectionKillsWithoutMajority() {
         add(0, "CREW_SAILOR", true);
         add(1, "CREW_DOCTOR", true);
         add(2, "CREW_CAPTAIN", true);
         add(3, "PIRATE_RAIDER", true);
         add(4, "PIRATE_PARROT", true);
-        submit(3, "TEAM_ATTACK_VOTE", 0);
+        submit(3, "SELECT_ATTACK_TARGET", 0);
+        nights.resolveNight(roomsId);
+        assertFalse(players.findByRoomIdAndPlayerId(roomsId, 0L).orElseThrow().isAlive());
+        assertTrue(reportText(0).contains("NIGHT_DEATH"));
+        assertEquals(Faction.PIRATE, rooms.findById(roomsId).orElseThrow().getWinnerFaction());
+    }
+
+    @Test void latestPirateSelectionIsSharedAndRetryDoesNotRevertIt() throws Exception {
+        add(0, "CREW_SAILOR", true);
+        add(1, "CREW_DOCTOR", true);
+        add(2, "CREW_CAPTAIN", true);
+        add(3, "PIRATE_RAIDER", true);
+        add(4, "PIRATE_RAIDER", true);
+        add(5, "PIRATE_PARROT", true);
+        add(6, "CREW_LOOKOUT", true);
+        UUID firstId = UUID.randomUUID();
+        UUID secondId = UUID.randomUUID();
+        mvc.perform(post("/api/v1/games/{gamesId}/actions", roomsId)
+                .with(jwt().jwt(token -> token.subject("103")))
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                    {"requestId":"%s","actionCode":"SELECT_ATTACK_TARGET","targetPlayerId":0}
+                    """.formatted(firstId)))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.status").value("SELECTED"))
+            .andExpect(jsonPath("$.targetPlayerId").value(0));
+        roles.submitAction(roomsId, 104L,
+            new SubmitActionRequest(secondId, "SELECT_ATTACK_TARGET", 1L));
+        submit(3, "SELECT_ATTACK_TARGET", 2);
+        // 늦게 도착한 동일 requestId 재시도는 현재 공유 대상을 되돌리지 않는다.
+        roles.submitAction(roomsId, 104L,
+            new SubmitActionRequest(secondId, "SELECT_ATTACK_TARGET", 1L));
+        assertEquals(3, pirateSelections.count());
+        assertEquals(2L, roles.getPirateAttackTarget(roomsId, 105L).targetPlayerId());
+        mvc.perform(get("/api/v1/games/{gamesId}/pirate-attack", roomsId)
+                .with(jwt().jwt(token -> token.subject("103"))))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.hasTarget").value(true))
+            .andExpect(jsonPath("$.targetPlayerId").value(2));
+        ResponseStatusException denied = assertThrows(ResponseStatusException.class,
+            () -> submit(5, "SELECT_ATTACK_TARGET", 0));
+        assertEquals(403, denied.getStatusCode().value());
         nights.resolveNight(roomsId);
         assertTrue(players.findByRoomIdAndPlayerId(roomsId, 0L).orElseThrow().isAlive());
-        assertFalse(reportText(0).contains("NIGHT_DEATH"));
+        assertTrue(players.findByRoomIdAndPlayerId(roomsId, 1L).orElseThrow().isAlive());
+        assertFalse(players.findByRoomIdAndPlayerId(roomsId, 2L).orElseThrow().isAlive());
+    }
+
+    @Test void blockedOnlyRaiderCannotAttack() {
+        add(0, "CREW_BOATSWAIN", true);
+        add(1, "CREW_SAILOR", true);
+        add(2, "CREW_DOCTOR", true);
+        add(3, "PIRATE_RAIDER", true);
+        submit(0, "BLOCK", 3);
+        submit(3, "SELECT_ATTACK_TARGET", 1);
+        nights.resolveNight(roomsId);
+        assertTrue(players.findByRoomIdAndPlayerId(roomsId, 1L).orElseThrow().isAlive());
+        assertFalse(reportText(1).contains("NIGHT_DEATH"));
+    }
+
+    @Test void anotherRaiderCanExecuteSharedAttackWhenSelectorIsBlocked() {
+        add(0, "CREW_BOATSWAIN", true);
+        add(1, "CREW_SAILOR", true);
+        add(2, "CREW_DOCTOR", true);
+        add(3, "CREW_CAPTAIN", true);
+        add(4, "PIRATE_RAIDER", true);
+        add(5, "PIRATE_RAIDER", true);
+        submit(0, "BLOCK", 4);
+        submit(4, "SELECT_ATTACK_TARGET", 1);
+        nights.resolveNight(roomsId);
+        assertFalse(players.findByRoomIdAndPlayerId(roomsId, 1L).orElseThrow().isAlive());
+        assertTrue(reportText(1).contains("NIGHT_DEATH"));
     }
 
     @Test void gunnerShootsOnFirstDayAndWins() {

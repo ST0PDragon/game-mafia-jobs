@@ -13,7 +13,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "room_actions", uniqueConstraints = {
     // request_id는 통신 재시도용, 두 번째 제약은 단계·라운드·능력별 중복 방지용이다.
-    // action_code가 키에 있으므로 앵무새는 같은 밤에 감시와 공격 투표를 각각 낼 수 있다.
+    // 해적 공격 대상은 밤 동안 바꿀 수 있으므로 이 테이블 대신 pirate_attack_selections에 저장한다.
     @UniqueConstraint(columnNames = {"room_id", "actor_player_id", "request_id"}),
     @UniqueConstraint(columnNames = {"room_id", "actor_player_id", "phase", "round_number", "action_code"})
 })

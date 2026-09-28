@@ -24,7 +24,7 @@ public class RoomEntity {
     @Column(nullable = false)
     private RoomPhase phase;
 
-    // 첫 낮/첫 밤은 1이다. 낮이 끝날 때만 증가하고, 행동의 중복 키에 사용한다.
+    // 첫 낮/첫 밤은 1이다. 낮이 끝날 때만 증가하고, 행동과 공격 대상의 라운드 키에 사용한다.
     @Column(name = "night_number", nullable = false)
     private int nightNumber;
 

@@ -56,6 +56,17 @@ namespace MafiaGame.Network
     }
 
     [Serializable]
+    public class PirateAttackTargetResponse
+    {
+        public long gamesId;
+        public int nightNumber;
+        // playerId 0도 유효하므로 targetPlayerId가 0인지가 아닌 이 필드로 선택 여부를 판단한다.
+        public bool hasTarget;
+        public long targetPlayerId;
+        public long selectedByPlayerId;
+    }
+
+    [Serializable]
     public class ActionRequest
     {
         // 전송 결과를 모를 때 같은 요청을 재시도할 수 있도록 UUID 문자열을 보관한다.
@@ -112,8 +123,18 @@ namespace MafiaGame.Network
                         accessToken, onSuccess, onError);
         }
 
+        /// <summary>해적 팀이 밤 동안 공유하는 마지막 공격 대상을 조회한다.</summary>
+        public IEnumerator GetPirateAttackTarget(long gamesId, string accessToken,
+                                                 Action<PirateAttackTargetResponse> onSuccess,
+                                                 Action<long, string> onError)
+        {
+            return Send(UnityWebRequest.Get(baseUrl + "/games/" + gamesId + "/pirate-attack"),
+                        accessToken, onSuccess, onError);
+        }
+
         /// <summary>
         /// 낮 또는 밤 행동을 제출한다. 통신 오류 후 재시도할 때는 같은 requestId와 내용을 전달한다.
+        /// SELECT_ATTACK_TARGET은 밤 동안 새 UUID로 다시 보내면 공유 대상이 바뀐다.
         /// targetPlayerId는 계정 userId가 아니라 게임 안의 playerId다.
         /// </summary>
         public IEnumerator SubmitAction(long gamesId, string accessToken,
