@@ -1,0 +1,27 @@
+# [파일 역할] 기본(개발용) 설정. 별도 프로필을 지정하지 않으면 이 값으로 서버가 뜬다.
+#   ${이름:기본값} 문법: 환경 변수 "이름"이 있으면 그 값을, 없으면 ':' 뒤 기본값을 쓴다.
+# 원본 위치: server/src/main/resources/application.yml
+
+spring:
+  datasource:
+    # DB 접속 주소. 기본값은 H2 메모리 DB(서버를 끄면 데이터가 사라짐).
+    #   MODE=PostgreSQL      : H2가 PostgreSQL 문법을 흉내 내게 한다(운영 DB와 SQL을 맞추려고)
+    #   DB_CLOSE_DELAY=-1    : 마지막 연결이 끊겨도 서버가 켜져 있는 동안 DB를 유지
+    url: ${DB_URL:jdbc:h2:mem:mafia;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${DB_USER:sa}       # H2 기본 계정
+    password: ${DB_PASSWORD:}     # 기본값은 빈 비밀번호
+  jpa:
+    hibernate:
+      # validate: 테이블을 만들거나 바꾸지 않고, 엔티티와 실제 테이블 구조가 맞는지만 검사한다.
+      #   테이블은 Flyway(V1~V3)가 만든다. 안 맞으면 서버 시작 시 오류로 바로 알 수 있다.
+      ddl-auto: validate
+    # OSIV 끔: DB 연결을 요청 처리 끝까지 붙잡지 않고, 서비스(@Transactional)가 끝나면 바로 반납한다.
+    open-in-view: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # JWT 발급자 주소. 서버는 이 주소의 /.well-known 설정에서 공개키를 받아 서명을 검증한다.
+          # ⚠ 기본값은 존재하지 않는 주소(example.invalid)라 로컬에서는 실제 토큰 검증이 불가능하다.
+          #   테스트는 spring-security-test의 가짜 jwt()를 써서 이 검증을 건너뛴다.
+          issuer-uri: ${JWT_ISSUER_URI:https://issuer.example.invalid}

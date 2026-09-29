@@ -1,0 +1,14 @@
+# [파일 역할] 운영(prod) 프로필 설정. SPRING_PROFILES_ACTIVE=prod 로 실행하면 application.yml 위에 덮어쓴다.
+#   기본값(:...)이 없으므로 환경 변수를 빠뜨리면 서버가 시작하지 않는다 → 운영에서 실수로 H2를 쓰는 사고를 막는다.
+# 원본 위치: server/src/main/resources/application-prod.yml
+
+spring:
+  datasource:
+    url: ${DB_URL}              # 예: jdbc:postgresql://db-host:5432/mafia
+    username: ${DB_USER}        # DB 계정
+    password: ${DB_PASSWORD}    # DB 비밀번호 (코드에 적지 않고 환경 변수로만)
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI} # 실제 인증 서버 주소
